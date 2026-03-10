@@ -40,7 +40,7 @@ export default async function Home() {
       </header>
 
       <main className="flex-1 overflow-auto p-4 md:p-6 lg:p-8">
-        <div className="mx-auto max-w-6xl w-full flex flex-col gap-6">
+        <div className="mx-auto w-full flex flex-col gap-6">
           <div>
             <h1 className="text-3xl font-bold tracking-tight">Recent Orders</h1>
             <p className="text-muted-foreground mt-1 text-sm">Review and manage your store's latest transactions.</p>
