@@ -1,6 +1,7 @@
 import {
     Sidebar,
     SidebarContent,
+    SidebarFooter,
     SidebarGroup,
     SidebarGroupContent,
     SidebarGroupLabel,
@@ -11,6 +12,7 @@ import {
 } from "@/components/ui/sidebar"
 import { Package, LayoutDashboard, ShoppingCart, Users, Settings } from "lucide-react"
 import Link from "next/link"
+import { LogoutButton } from "@/components/logout-button"
 
 export function AppSidebar() {
     return (
@@ -64,6 +66,11 @@ export function AppSidebar() {
                     </SidebarGroupContent>
                 </SidebarGroup>
             </SidebarContent>
+            <SidebarFooter>
+                <SidebarMenu>
+                    <LogoutButton />
+                </SidebarMenu>
+            </SidebarFooter>
         </Sidebar>
     )
 }
