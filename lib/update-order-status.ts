@@ -14,11 +14,15 @@ function colToA1(colNumber: number) {
 export async function updateOrderStatusById(orderId: string, newStatus: string) {
   const sheetId = process.env.GOOGLE_SHEET_ID?.trim();
   const sheetName = process.env.GOOGLE_SHEET_NAME?.trim() || "Orders";
-  const clientEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL?.trim();
+  const clientEmail =
+    process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL?.trim() ||
+    process.env.GOOGLE_CLIENT_EMAIL?.trim();
   const privateKey = process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, "\n");
 
   if (!sheetId || !clientEmail || !privateKey) {
-    throw new Error("Missing Google Sheets credentials in environment.");
+    throw new Error(
+      "Missing Google Sheets credentials. Set GOOGLE_PRIVATE_KEY and either GOOGLE_SERVICE_ACCOUNT_EMAIL or GOOGLE_CLIENT_EMAIL."
+    );
   }
 
   const auth = new google.auth.JWT({

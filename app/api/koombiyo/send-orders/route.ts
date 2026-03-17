@@ -42,6 +42,7 @@ export async function POST(req: Request) {
     const updatedOrderIds: string[] = [];
     const skippedOrderIds: string[] = [];
     const failedOrderIds: string[] = [];
+    const generatedWaybills: Array<{ orderId: string; waybill: string }> = [];
 
     for (let i = 0; i < orders.length; i++) {
       const o = orders[i];
@@ -108,6 +109,7 @@ export async function POST(req: Request) {
 
         await updateOrderStatusById(orderId, "sent-to-koombiyo");
         updatedOrderIds.push(orderId);
+        generatedWaybills.push({ orderId, waybill: String(waybill) });
         logs.push(`✅ #${orderId}: Sent to Koombiyo. Waybill: ${waybill}`);
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Unknown error";
@@ -121,6 +123,7 @@ export async function POST(req: Request) {
       updatedOrderIds,
       skippedOrderIds,
       failedOrderIds,
+      generatedWaybills,
       logs,
     });
   } catch (err) {
