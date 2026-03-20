@@ -22,7 +22,7 @@ export function AppSidebar() {
                     <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
                         <Package className="size-4" />
                     </div>
-                    <span className="truncate">WA Dashboard</span>
+                    <span className="truncate">Vincent Pelle</span>
                 </div>
             </SidebarHeader>
             <SidebarContent>
@@ -38,30 +38,7 @@ export function AppSidebar() {
                                     </Link>
                                 </SidebarMenuButton>
                             </SidebarMenuItem>
-                            <SidebarMenuItem>
-                                <SidebarMenuButton asChild>
-                                    <Link href="#">
-                                        <Users />
-                                        <span>Customers</span>
-                                    </Link>
-                                </SidebarMenuButton>
-                            </SidebarMenuItem>
-                            <SidebarMenuItem>
-                                <SidebarMenuButton asChild>
-                                    <Link href="#">
-                                        <LayoutDashboard />
-                                        <span>Analytics</span>
-                                    </Link>
-                                </SidebarMenuButton>
-                            </SidebarMenuItem>
-                            <SidebarMenuItem>
-                                <SidebarMenuButton asChild>
-                                    <Link href="#">
-                                        <Settings />
-                                        <span>Settings</span>
-                                    </Link>
-                                </SidebarMenuButton>
-                            </SidebarMenuItem>
+
                         </SidebarMenu>
                     </SidebarGroupContent>
                 </SidebarGroup>

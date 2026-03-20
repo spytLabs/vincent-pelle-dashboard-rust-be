@@ -41,6 +41,38 @@ export async function PATCH(req: Request, { params }: Params) {
       );
     }
 
+    const ALLOWED_EDITABLE_FIELDS = [
+      "Customer Name",
+      "Email",
+      "Phone",
+      "WhatsApp",
+      "Address Line 1",
+      "Address Line 2",
+      "City",
+      "State",
+      "Postcode",
+      "District",
+      "Items Summary",
+      "Shipping",
+      "Total",
+      "Customer Note"
+    ];
+
+    const allowedSet = new Set(ALLOWED_EDITABLE_FIELDS.map(f => f.toLowerCase()));
+
+    // Check if any keys in the updates object are not in the allowed list
+    const incomingKeys = Object.keys(updates);
+    const hasDisallowedFields = incomingKeys.some(
+      key => !allowedSet.has(key.toLowerCase())
+    );
+
+    if (hasDisallowedFields) {
+      return NextResponse.json(
+        { error: "Attempted to update one or more disallowed fields." },
+        { status: 400 }
+      );
+    }
+
     const order = await updateOrderDetailsById(orderId, updates as Record<string, string>);
     return NextResponse.json({ success: true, order });
   } catch (err) {

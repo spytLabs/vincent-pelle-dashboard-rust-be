@@ -29,6 +29,14 @@ import {
   X,
 } from "lucide-react";
 import { Checkbox } from "radix-ui";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Progress } from "@/components/ui/progress";
 
 type SortKey = "id" | "dateCreated" | "status" | "district";
 type SortDirection = "asc" | "desc";
@@ -140,6 +148,78 @@ export function OrderTable({ orders }: { orders: Order[] }) {
   );
   const [isEditMode, setIsEditMode] = useState(false);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+
+  // Koombiyo Locations State
+  const [districts, setDistricts] = useState<Array<{ district_id: number; district_name: string }>>([]);
+  const [cities, setCities] = useState<Array<{ city_id: number; name: string }>>([]);
+  const [loadingCities, setLoadingCities] = useState(false);
+
+  // PDF Download State
+  const [isPdfModalOpen, setIsPdfModalOpen] = useState(false);
+  const [pdfProgress, setPdfProgress] = useState(0);
+  const [pdfStatusText, setPdfStatusText] = useState("");
+  const [pdfProcessedCount, setPdfProcessedCount] = useState(0);
+  const [pdfTotalCount, setPdfTotalCount] = useState(0);
+
+  // Constants
+  const ALLOWED_EDITABLE_FIELDS = [
+    "Customer Name",
+    "Email",
+    "Phone",
+    "WhatsApp",
+    "Address Line 1",
+    "Address Line 2",
+    "City",
+    "State",
+    "Postcode",
+    "District",
+    "Items Summary",
+    "Shipping",
+    "Total",
+    "Customer Note",
+  ];
+  const allowedSet = new Set(ALLOWED_EDITABLE_FIELDS.map((f) => f.toLowerCase()));
+
+  useEffect(() => {
+    if (detailsOpen) {
+      // Fetch districts when modal opens
+      fetch("/api/koombiyo/districts")
+        .then((res) => res.json())
+        .then((data) => {
+          if (Array.isArray(data)) setDistricts(data);
+          else if (Array.isArray(data?.districts)) setDistricts(data.districts);
+        })
+        .catch((err) => console.error("Failed to load districts", err));
+    }
+  }, [detailsOpen]);
+
+  useEffect(() => {
+    // Whenever the selected District changes, fetch its cities
+    const selectedDistrictName = editableFields["District"];
+    if (!selectedDistrictName || !districts.length) {
+      setCities([]);
+      return;
+    }
+
+    const matchedDistrict = districts.find(
+      (d) => d.district_name.toLowerCase() === selectedDistrictName.toLowerCase()
+    );
+
+    if (matchedDistrict) {
+      setLoadingCities(true);
+      fetch(`/api/koombiyo/cities?district_id=${matchedDistrict.district_id}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (Array.isArray(data)) setCities(data);
+          else if (Array.isArray(data?.cities)) setCities(data.cities);
+          else setCities([]);
+        })
+        .catch((err) => console.error("Failed to load cities", err))
+        .finally(() => setLoadingCities(false));
+    } else {
+      setCities([]);
+    }
+  }, [editableFields["District"], districts]);
 
   const toggleMainRow = (id: string) => {
     setSelectedMain((prev) => {
@@ -390,34 +470,83 @@ export function OrderTable({ orders }: { orders: Order[] }) {
   const generateBulkWaybillPdfs = useCallback(
     async (orderIds: string[]) => {
       if (!orderIds.length) {
-        showToast("No orders selected.", "info");
+        showToast("No eligible orders selected. (Only 'sent-to-koombiyo' orders can be exported to PDF).", "info");
         return;
       }
 
-      const opened: string[] = [];
+      setIsProcessing(true);
+
+      setPdfTotalCount(orderIds.length);
+      setPdfProcessedCount(0);
+      setPdfProgress(0);
+      setPdfStatusText("Preparing to fetch waybills...");
+      setIsPdfModalOpen(true);
+
+      const waybillIds: string[] = [];
       const failed: string[] = [];
 
-      for (const id of orderIds) {
+      for (let i = 0; i < orderIds.length; i++) {
+        const id = orderIds[i];
+        setPdfStatusText(`Fetching waybill for order #${id}...`);
         try {
           const waybill = await ensureWaybillForOrder(id);
-          openWaybillPdf(waybill);
-          opened.push(id);
+          waybillIds.push(waybill);
         } catch {
           failed.push(id);
         }
+        setPdfProcessedCount(i + 1);
+        setPdfProgress(Math.floor(((i + 1) / orderIds.length) * 85)); // Up to 85% for fetching
       }
 
-      if (opened.length) {
-        showToast(`Opened ${opened.length} waybill PDF(s).`, "success");
+      if (failed.length > 0) {
+        showToast(`${failed.length} selected order(s) missing waybills.`, "error");
       }
-      if (failed.length) {
-        showToast(
-          `${failed.length} selected order(s) do not have waybills yet or could not be opened.`,
-          "error",
-        );
+
+      if (waybillIds.length > 0) {
+        try {
+          setPdfStatusText("Generating PDF document...");
+          setPdfProgress(90);
+
+          const res = await fetch("/api/pod/bulk", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ waybillIds }),
+          });
+
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data?.error || "Failed to generate bulk PDF.");
+          }
+
+          setPdfStatusText("Downloading...");
+          setPdfProgress(95);
+
+          const blob = await res.blob();
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.style.display = "none";
+          a.href = url;
+          a.download = `bulk_pods_${new Date().getTime()}.pdf`;
+          document.body.appendChild(a);
+          a.click();
+          window.URL.revokeObjectURL(url);
+          document.body.removeChild(a);
+
+          setPdfStatusText("Download complete!");
+          setPdfProgress(100);
+          showToast(`Downloaded bulk PDF for ${waybillIds.length} orders.`, "success");
+        } catch (e) {
+          showToast(e instanceof Error ? e.message : "Failed to load bulk PDF.", "error");
+          setPdfStatusText("Failed to generate PDF.");
+        }
+      } else {
+        setPdfStatusText("No valid waybills found.");
       }
+
+      setIsProcessing(false);
+      setTimeout(() => setIsPdfModalOpen(false), 2000);
     },
-    [ensureWaybillForOrder, openWaybillPdf, showToast],
+    [ensureWaybillForOrder, showToast],
   );
 
   const toastFromLogLine = useCallback(
@@ -448,9 +577,9 @@ export function OrderTable({ orders }: { orders: Order[] }) {
       prev.map((order) =>
         getOrderId(order) === orderId
           ? {
-              ...order,
-              status,
-            }
+            ...order,
+            status,
+          }
           : order,
       ),
     );
@@ -618,7 +747,7 @@ export function OrderTable({ orders }: { orders: Order[] }) {
   };
 
   const processOrders = async (inputOrders: Order[]) => {
-    const toSend = inputOrders.filter(isSendable);
+    const toSend = inputOrders;
     if (!toSend.length) {
       showToast("No eligible orders selected.", "info");
       return;
@@ -648,9 +777,9 @@ export function OrderTable({ orders }: { orders: Order[] }) {
           prev.map((order) =>
             data.updatedOrderIds.includes(getOrderId(order))
               ? {
-                  ...order,
-                  status: "sent-to-koombiyo",
-                }
+                ...order,
+                status: "sent-to-koombiyo",
+              }
               : order,
           ),
         );
@@ -669,8 +798,7 @@ export function OrderTable({ orders }: { orders: Order[] }) {
 
         if (data.updatedOrderIds.length > 0) {
           showToast(
-            `Sent ${data.updatedOrderIds.length} order${
-              data.updatedOrderIds.length > 1 ? "s" : ""
+            `Sent ${data.updatedOrderIds.length} order${data.updatedOrderIds.length > 1 ? "s" : ""
             } to Koombiyo.`,
             "success",
           );
@@ -849,13 +977,12 @@ export function OrderTable({ orders }: { orders: Order[] }) {
         {toasts.map((toast) => (
           <div
             key={toast.id}
-            className={`rounded-md border px-3 py-2 text-sm shadow-lg ${
-              toast.variant === "success"
-                ? "border-emerald-600/30 bg-emerald-50 text-emerald-900"
-                : toast.variant === "error"
-                  ? "border-destructive/40 bg-destructive/10 text-destructive"
-                  : "border-sky-600/30 bg-sky-50 text-sky-900"
-            }`}
+            className={`rounded-md border px-3 py-2 text-sm shadow-lg ${toast.variant === "success"
+              ? "border-emerald-600/30 bg-emerald-50 text-emerald-900"
+              : toast.variant === "error"
+                ? "border-destructive/40 bg-destructive/10 text-destructive"
+                : "border-sky-600/30 bg-sky-50 text-sky-900"
+              }`}
           >
             {toast.message}
           </div>
@@ -945,23 +1072,31 @@ export function OrderTable({ orders }: { orders: Order[] }) {
               <Button
                 variant="outline"
                 size="sm"
-                disabled={isProcessing || selectedFiltered.size === 0}
-                onClick={() => generateBulkWaybillPdfs(Array.from(selectedFiltered))}
+                disabled={
+                  isProcessing ||
+                  filteredOrders.filter(o => selectedFiltered.has(getOrderId(o)) && getDisplayStatus(o).toLowerCase() === "sent-to-koombiyo").length === 0
+                }
+                onClick={() => generateBulkWaybillPdfs(
+                  filteredOrders.filter(o => selectedFiltered.has(getOrderId(o)) && getDisplayStatus(o).toLowerCase() === "sent-to-koombiyo").map(o => getOrderId(o))
+                )}
               >
-                PDF Selected ({selectedFiltered.size})
+                PDF Selected ({filteredOrders.filter(o => selectedFiltered.has(getOrderId(o)) && getDisplayStatus(o).toLowerCase() === "sent-to-koombiyo").length})
               </Button>
               <Button
                 size="sm"
-                disabled={isProcessing || selectedFiltered.size === 0}
+                disabled={
+                  isProcessing ||
+                  filteredOrders.filter(o => selectedFiltered.has(getOrderId(o)) && getDisplayStatus(o).toLowerCase() === "processing").length === 0
+                }
                 onClick={() =>
                   processOrders(
                     filteredOrders.filter((o) =>
-                      selectedFiltered.has(getOrderId(o)),
+                      selectedFiltered.has(getOrderId(o)) && getDisplayStatus(o).toLowerCase() === "processing"
                     ),
                   )
                 }
               >
-                Send Selected ({selectedFiltered.size})
+                Send Selected ({filteredOrders.filter(o => selectedFiltered.has(getOrderId(o)) && getDisplayStatus(o).toLowerCase() === "processing").length})
               </Button>
               <Button
                 variant="ghost"
@@ -1053,21 +1188,29 @@ export function OrderTable({ orders }: { orders: Order[] }) {
           <Button
             variant="outline"
             size="sm"
-            disabled={isProcessing || selectedMain.size === 0}
-            onClick={() => generateBulkWaybillPdfs(Array.from(selectedMain))}
+            disabled={
+              isProcessing ||
+              sortedOrders.filter(o => selectedMain.has(getOrderId(o)) && getDisplayStatus(o).toLowerCase() === "sent-to-koombiyo").length === 0
+            }
+            onClick={() => generateBulkWaybillPdfs(
+              sortedOrders.filter(o => selectedMain.has(getOrderId(o)) && getDisplayStatus(o).toLowerCase() === "sent-to-koombiyo").map(o => getOrderId(o))
+            )}
           >
-            PDF Selected ({selectedMain.size})
+            PDF Selected ({sortedOrders.filter(o => selectedMain.has(getOrderId(o)) && getDisplayStatus(o).toLowerCase() === "sent-to-koombiyo").length})
           </Button>
           <Button
             size="sm"
-            disabled={isProcessing || selectedMain.size === 0}
+            disabled={
+              isProcessing ||
+              sortedOrders.filter(o => selectedMain.has(getOrderId(o)) && getDisplayStatus(o).toLowerCase() === "processing").length === 0
+            }
             onClick={() =>
               processOrders(
-                sortedOrders.filter((o) => selectedMain.has(getOrderId(o))),
+                sortedOrders.filter((o) => selectedMain.has(getOrderId(o)) && getDisplayStatus(o).toLowerCase() === "processing"),
               )
             }
           >
-            Send Selected ({selectedMain.size})
+            Send Selected ({sortedOrders.filter(o => selectedMain.has(getOrderId(o)) && getDisplayStatus(o).toLowerCase() === "processing").length})
           </Button>
         </div>
 
@@ -1237,7 +1380,7 @@ export function OrderTable({ orders }: { orders: Order[] }) {
                     {selectedOrderDetails.status.toLowerCase() !==
                       "sent-to-koombiyo" &&
                       selectedOrderDetails.status.toLowerCase() !==
-                        "rejected" && (
+                      "rejected" && (
                         <Button
                           size="sm"
                           variant="destructive"
@@ -1252,17 +1395,17 @@ export function OrderTable({ orders }: { orders: Order[] }) {
 
                     {selectedOrderDetails.status.toLowerCase() ===
                       "rejected" && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={isProcessing || detailsSaving}
-                        onClick={() =>
-                          updateOrderStatus(selectedOrderId, "on-hold")
-                        }
-                      >
-                        Reaccept this order
-                      </Button>
-                    )}
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={isProcessing || detailsSaving}
+                          onClick={() =>
+                            updateOrderStatus(selectedOrderId, "on-hold")
+                          }
+                        >
+                          Reaccept this order
+                        </Button>
+                      )}
 
                     <div className="flex justify-end gap-2 px-5">
                       {isEditMode ? (
@@ -1303,7 +1446,8 @@ export function OrderTable({ orders }: { orders: Order[] }) {
 
                 <div className="space-y-3">
                   {selectedOrderDetails.fields.map((field) => {
-                    const lower = field.header.toLowerCase();
+                    const lower = field.header.toLowerCase().trim();
+                    const isAllowed = allowedSet.has(lower);
                     const isLongField =
                       lower.includes("address") ||
                       lower.includes("summary") ||
@@ -1318,8 +1462,48 @@ export function OrderTable({ orders }: { orders: Order[] }) {
                           {field.header}
                         </label>
 
-                        {isEditMode && field.editable ? (
-                          isLongField ? (
+                        {isEditMode && isAllowed && field.editable ? (
+                          lower === "district" ? (
+                            <select
+                              value={editableFields[field.header] ?? ""}
+                              onChange={(e) =>
+                                setEditableFields((prev) => ({
+                                  ...prev,
+                                  [field.header]: e.target.value,
+                                  City: "", // Reset city when district changes
+                                }))
+                              }
+                              className="h-9 rounded-md border border-input bg-background px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring w-full"
+                            >
+                              <option value="" disabled>Select District</option>
+                              {districts.map((d) => (
+                                <option key={d.district_id} value={d.district_name}>
+                                  {d.district_name}
+                                </option>
+                              ))}
+                            </select>
+                          ) : lower === "city" ? (
+                            <select
+                              value={editableFields[field.header] ?? ""}
+                              onChange={(e) =>
+                                setEditableFields((prev) => ({
+                                  ...prev,
+                                  [field.header]: e.target.value,
+                                }))
+                              }
+                              disabled={loadingCities || cities.length === 0}
+                              className="h-9 rounded-md border border-input bg-background px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring w-full disabled:opacity-50"
+                            >
+                              <option value="" disabled>
+                                {loadingCities ? "Loading cities..." : "Select City"}
+                              </option>
+                              {cities.map((c) => (
+                                <option key={c.city_id} value={c.name || (c as any).city_name}>
+                                  {c.name || (c as any).city_name}
+                                </option>
+                              ))}
+                            </select>
+                          ) : isLongField ? (
                             <textarea
                               value={editableFields[field.header] ?? ""}
                               onChange={(e) =>
@@ -1329,7 +1513,7 @@ export function OrderTable({ orders }: { orders: Order[] }) {
                                 }))
                               }
                               rows={3}
-                              className="min-h-[82px] rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                              className="min-h-[82px] rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring w-full"
                             />
                           ) : (
                             <Input
@@ -1343,7 +1527,7 @@ export function OrderTable({ orders }: { orders: Order[] }) {
                             />
                           )
                         ) : (
-                          <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm whitespace-pre-wrap break-words">
+                          <div className={`rounded-md border px-3 py-2 text-sm whitespace-pre-wrap break-words ${isEditMode ? "bg-muted/50 text-muted-foreground opacity-60 cursor-not-allowed" : "bg-muted/20"}`}>
                             {field.value || "-"}
                           </div>
                         )}
@@ -1356,6 +1540,33 @@ export function OrderTable({ orders }: { orders: Order[] }) {
           </div>
         </SheetContent>
       </Sheet>
+
+      <Dialog
+        open={isPdfModalOpen}
+        onOpenChange={(open) => {
+          if (!open && !isProcessing) {
+            setIsPdfModalOpen(false);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Generating POD PDFs</DialogTitle>
+            <DialogDescription>
+              Please wait while we process the selected orders and generate the PDF documents.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col space-y-4 py-4">
+            <Progress value={pdfProgress} className="w-full h-2" />
+            <div className="flex justify-between text-sm text-muted-foreground font-medium">
+              <span>{pdfStatusText}</span>
+              <span>
+                {pdfProcessedCount} / {pdfTotalCount}
+              </span>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

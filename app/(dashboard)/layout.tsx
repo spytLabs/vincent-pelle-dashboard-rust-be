@@ -2,6 +2,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
 import { AuthCheck } from "@/components/auth-check";
+import { Footer } from "@/components/footer";
 
 export default function DashboardLayout({
   children,
@@ -14,7 +15,10 @@ export default function DashboardLayout({
         <AuthCheck />
         <AppSidebar />
         <SidebarInset>
-          {children}
+          <div className="flex-1 flex flex-col">
+            {children}
+          </div>
+          <Footer />
         </SidebarInset>
       </SidebarProvider>
     </TooltipProvider>

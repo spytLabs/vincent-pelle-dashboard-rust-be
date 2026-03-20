@@ -20,6 +20,7 @@ type IncomingOrder = {
   whatsapp?: string;     // Might as well add this since your payload sends it
   itemsSummary?: string;
   total?: string | number;
+  paymentMethod?: string; // Add this
 };
 
 function isLockedStatus(status?: string) {
@@ -101,6 +102,8 @@ export async function POST(req: Request) {
         if (!receiverStreet) throw new Error("Missing receiver street/address.");
         if (!receiverPhone) throw new Error("Missing receiver phone.");
 
+        const isCOD = String(o.paymentMethod ?? "").trim().toLowerCase() === "cash on delivery";
+
         await addOrder({
           orderWaybillid: waybill,
           orderNo: orderId,
@@ -111,7 +114,7 @@ export async function POST(req: Request) {
           receiverPhone,
           description: String(o.itemsSummary ?? "Order items"),
           spclNote: "",
-          getCod: parseCod(o.total),
+          getCod: isCOD ? parseCod(o.total) : 0,
         });
 
         await updateOrderStatusById(orderId, "sent-to-koombiyo", String(waybill));

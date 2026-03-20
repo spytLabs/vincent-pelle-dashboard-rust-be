@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "WA Dashboard",
-  description: "Vincent Pelle WA Dashboard",
+  title: "Vincent Pelle Koombiyo Dashboard",
+  description: "Vincent Pelle Koombiyo Dashboard",
 };
 
 export default function RootLayout({

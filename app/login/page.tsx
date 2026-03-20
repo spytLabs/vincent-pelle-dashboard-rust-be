@@ -45,7 +45,7 @@ export default function LoginPage() {
           <div className="flex aspect-square size-12 items-center justify-center rounded-xl bg-primary text-primary-foreground mb-4">
             <Package className="size-6" />
           </div>
-          <h1 className="text-2xl font-bold tracking-tight">WA Dashboard</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Vincent Pelle</h1>
           <p className="text-muted-foreground text-sm mt-1">
             Sign in with your Koombiyo Delivery account
           </p>
