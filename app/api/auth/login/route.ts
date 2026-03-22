@@ -21,6 +21,7 @@ export async function POST(request: NextRequest) {
       },
       body: `logUsername=${encodeURIComponent(username)}&logPass=${encodeURIComponent(password)}`,
       redirect: "manual",
+      cache: "no-store",
     });
 
     // Check the login response body for success/failure
@@ -44,8 +45,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Koombiyo returns "0" or error text on failed login
-    if (loginBody.trim() === "0" || loginBody.toLowerCase().includes("error")) {
+    // Koombiyo returns "0", error text, or {"status":"failed"} on failed login
+    if (loginBody.trim() === "0" || loginBody.toLowerCase().includes("error") || loginBody.toLowerCase().includes("failed")) {
       return NextResponse.json(
         { error: "Invalid username or password" },
         { status: 401 }
@@ -60,6 +61,7 @@ export async function POST(request: NextRequest) {
         "cookie": `cisessionlk=${sessionCookie}`,
       },
       redirect: "manual",
+      cache: "no-store",
     });
 
     // If we get a redirect (307), the login didn't actually succeed

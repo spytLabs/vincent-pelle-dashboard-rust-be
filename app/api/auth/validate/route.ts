@@ -16,6 +16,7 @@ export async function GET(request: NextRequest) {
         "cookie": `cisessionlk=${sessionCookie}`,
       },
       redirect: "manual",
+      cache: "no-store",
     });
 
     // 307 or any redirect means invalid session
