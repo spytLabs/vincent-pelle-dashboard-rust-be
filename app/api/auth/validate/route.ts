@@ -8,12 +8,17 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ valid: false }, { status: 401 });
     }
 
+    const clientIp = request.headers.get("x-forwarded-for") || "";
+    const userAgent = request.headers.get("user-agent") || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+
     // Validate by hitting koombiyo /myaccount
     const validateRes = await fetch("https://koombiyodelivery.lk/myaccount", {
       method: "GET",
       headers: {
         "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "cookie": `cisessionlk=${sessionCookie}`,
+        "user-agent": userAgent,
+        "x-forwarded-for": clientIp,
       },
       redirect: "manual",
       cache: "no-store",

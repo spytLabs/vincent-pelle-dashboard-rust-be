@@ -21,6 +21,9 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    const clientIp = request.headers.get("x-forwarded-for") || "";
+    const userAgent = request.headers.get("user-agent") || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+
     const koombiyoUrl = `https://koombiyodelivery.lk/myaccount/pod_single?waybill=${encodeURIComponent(waybillid)}`;
 
     // Forward the request to Koombiyo
@@ -28,6 +31,8 @@ export async function GET(request: NextRequest) {
       method: "GET",
       headers: {
         "cookie": `cisessionlk=${sessionCookie}`,
+        "user-agent": userAgent,
+        "x-forwarded-for": clientIp,
       },
       redirect: "manual", // Handle redirects programmatically
     });

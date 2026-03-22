@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-export async function GET() {
+export async function GET(req: Request) {
     try {
         const apiKey = process.env.KOOMBIYO_API_KEY?.trim();
         if (!apiKey) {
@@ -10,6 +10,9 @@ export async function GET() {
             );
         }
 
+        const clientIp = req.headers.get("x-forwarded-for") || "";
+        const userAgent = req.headers.get("user-agent") || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+
         const url = `${process.env.KOOMBIYO_BASE_URL}/Districts/users`;
         const body = new URLSearchParams({ apikey: apiKey }).toString();
 
@@ -18,6 +21,8 @@ export async function GET() {
             headers: {
                 "Content-Type": "application/x-www-form-urlencoded",
                 "Accept": "application/json",
+                "user-agent": userAgent,
+                "x-forwarded-for": clientIp,
             },
             body,
         });

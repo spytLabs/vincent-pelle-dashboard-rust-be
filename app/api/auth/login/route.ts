@@ -4,6 +4,9 @@ export async function POST(request: NextRequest) {
   try {
     const { username, password } = await request.json();
 
+    const clientIp = request.headers.get("x-forwarded-for") || "";
+    const userAgent = request.headers.get("user-agent") || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+
     if (!username || !password) {
       return NextResponse.json(
         { error: "Username and password are required" },
@@ -18,6 +21,8 @@ export async function POST(request: NextRequest) {
         "accept": "*/*",
         "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
         "x-requested-with": "XMLHttpRequest",
+        "user-agent": userAgent,
+        "x-forwarded-for": clientIp,
       },
       body: `logUsername=${encodeURIComponent(username)}&logPass=${encodeURIComponent(password)}`,
       redirect: "manual",
@@ -59,6 +64,8 @@ export async function POST(request: NextRequest) {
       headers: {
         "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "cookie": `cisessionlk=${sessionCookie}`,
+        "user-agent": userAgent,
+        "x-forwarded-for": clientIp,
       },
       redirect: "manual",
       cache: "no-store",
