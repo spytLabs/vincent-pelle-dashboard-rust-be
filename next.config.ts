@@ -1,7 +1,7 @@
 import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
-  // output: 'export', // Commented out to prevent NEXT_STATIC_GEN_BAILOUT during dev
+  output: 'export', // Uncommented to allow static export for Tauri
   images: {
     unoptimized: true,
   },

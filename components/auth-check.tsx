@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { invoke } from "@tauri-apps/api/core";
 
 export function AuthCheck() {
   const router = useRouter();
@@ -9,13 +10,19 @@ export function AuthCheck() {
   useEffect(() => {
     async function validateSession() {
       try {
-        const res = await fetch("/api/auth/validate");
-        if (!res.ok) {
+        const cookie = localStorage.getItem("koombiyo_session");
+        if (!cookie) {
           router.push("/login");
-          router.refresh();
+          return;
+        }
+        const isValid = await invoke<boolean>("validate_koombiyo", { cookie });
+        if (!isValid) {
+          localStorage.removeItem("koombiyo_session");
+          router.push("/login");
         }
       } catch {
         console.error("Failed to validate session");
+        router.push("/login");
       }
     }
 

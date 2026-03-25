@@ -1,26 +1,38 @@
-import { getOrders } from "@/lib/google-sheets";
+"use client";
+
+import { useState, useEffect, useCallback } from "react";
 import { OrderTable } from "@/components/order-table";
 import { SidebarTrigger } from "@/components/ui/sidebar";
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
-} from "@/components/ui/breadcrumb";
 import { Separator } from "@/components/ui/separator";
-
-import { checkWaybillsQuantity } from "@/lib/check-waybills";
-
+import { invoke } from "@tauri-apps/api/core";
+import Image from "next/image";
 import spytXvincent from "@/public/spytXvincent.png";
+import { Order } from "@/lib/google-sheets";
 
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
+export default function Home() {
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [waybillsCount, setWaybillsCount] = useState<number>(0);
+  const [loading, setLoading] = useState(true);
 
-export default async function Home() {
-  const orders = await getOrders();
-  const waybillsCount = await checkWaybillsQuantity();
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [ordersData, waybills] = await Promise.all([
+        invoke<Order[]>("fetch_orders_sheets"),
+        invoke<number>("check_koombiyo_waybills").catch(() => 0),
+      ]);
+      setOrders(ordersData || []);
+      setWaybillsCount(waybills);
+    } catch (err) {
+      console.error("Failed to fetch initial data:", err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   return (
     <div className="flex flex-col h-full min-h-screen bg-muted/20">
@@ -28,18 +40,7 @@ export default async function Home() {
         <div className="flex items-center gap-2 px-4">
           <SidebarTrigger className="-ml-1" />
           <Separator orientation="vertical" className="mr-2 h-4" />
-          <img src={spytXvincent.src} alt="Spyt x Vincent" className="h-15 w-auto" />
-          {/* <Breadcrumb>
-            <BreadcrumbList>
-              <BreadcrumbItem className="hidden md:block">
-                <BreadcrumbLink href="#">Dashboard</BreadcrumbLink>
-              </BreadcrumbItem>
-              <BreadcrumbSeparator className="hidden md:block" />
-              <BreadcrumbItem>
-                <BreadcrumbPage>Orders</BreadcrumbPage>
-              </BreadcrumbItem>
-            </BreadcrumbList>
-          </Breadcrumb> */}
+          <Image src={spytXvincent} alt="Spyt x Vincent" className="h-15 w-auto" />
         </div>
       </header>
 
@@ -55,11 +56,11 @@ export default async function Home() {
               </p>
             </div>
             <div className="text-sm text-muted-foreground border rounded-md px-3 py-1 bg-accent">
-               Remaining Waybills: {waybillsCount}
+              Remaining Waybills: {loading ? "Loading..." : waybillsCount}
             </div>
           </div>
 
-          {waybillsCount < 10 && (
+          {!loading && waybillsCount < 10 && (
             <div className="rounded-md bg-red-50 p-4">
               <div className="flex">
                 <div className="flex-shrink-0">
@@ -86,7 +87,13 @@ export default async function Home() {
             </div>
           )}
 
-          <OrderTable orders={orders} />
+          {loading ? (
+            <div className="flex justify-center p-12 text-muted-foreground">
+              Loading orders...
+            </div>
+          ) : (
+            <OrderTable orders={orders} onRefresh={loadData} />
+          )}
         </div>
       </main>
     </div>

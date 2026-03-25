@@ -26,3 +26,10 @@ tauri-plugin-log = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
+reqwest = { version = "0.12", features = ["json", "cookies", "rustls-tls-native-roots"] }
+dotenvy = "0.15"
+jsonwebtoken = "9"
+base64 = "0.22"
+tokio = { version = "1.37", features = ["full"] }
+chrono = { version = "0.4", features = ["serde"] }
+urlencoding = "2.1"

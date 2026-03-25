@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Package, Loader2 } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -17,22 +18,16 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      const res = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
-      });
-
-      const data = await res.json();
-
-      if (res.ok && data.success) {
+      const cookie = await invoke<string>("login_koombiyo", { username, password });
+      if (cookie) {
+        localStorage.setItem("koombiyo_session", cookie);
         router.push("/");
         router.refresh();
       } else {
-        setError(data.error || "Login failed. Please check your credentials.");
+        setError("Login failed. Please check your credentials.");
       }
-    } catch {
-      setError("An error occurred. Please try again.");
+    } catch (err) {
+      setError(typeof err === "string" ? err : "An error occurred. Please try again.");
     } finally {
       setLoading(false);
     }

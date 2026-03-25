@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect, useCallback, useTransition } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { Input } from "@/components/ui/input";
 import {
   Table,
@@ -38,11 +38,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
-import { isTauri } from "@tauri-apps/api/core";
+import { isTauri, invoke } from "@tauri-apps/api/core";
 import { writeFile } from "@tauri-apps/plugin-fs";
 import { save } from "@tauri-apps/plugin-dialog";
 import { open } from "@tauri-apps/plugin-shell";
 import { useRouter } from "next/navigation";
+import { PDFDocument } from "pdf-lib";
 
 type SortKey = "id" | "dateCreated" | "status" | "district";
 type SortDirection = "asc" | "desc";
@@ -160,9 +161,9 @@ function getStatusBadgeClass(status?: string) {
   return "border-zinc-200 bg-zinc-50 text-zinc-700";
 }
 
-export function OrderTable({ orders }: { orders: Order[] }) {
+export function OrderTable({ orders, onRefresh }: { orders: Order[]; onRefresh?: () => void }) {
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const router = useRouter();
-  const [isPending, startTransition] = useTransition();
 
   const [tableOrders, setTableOrders] = useState<Order[]>(orders);
   useEffect(() => {
@@ -224,8 +225,7 @@ export function OrderTable({ orders }: { orders: Order[] }) {
   useEffect(() => {
     if (detailsOpen) {
       // Fetch districts when modal opens
-      fetch("/api/koombiyo/districts")
-        .then((res) => res.json())
+      invoke<any>("fetch_koombiyo_districts")
         .then((data) => {
           if (Array.isArray(data)) setDistricts(data);
           else if (Array.isArray(data?.districts)) setDistricts(data.districts);
@@ -249,8 +249,7 @@ export function OrderTable({ orders }: { orders: Order[] }) {
 
     if (matchedDistrict) {
       setLoadingCities(true);
-      fetch(`/api/koombiyo/cities?district_id=${matchedDistrict.district_id}`)
-        .then((res) => res.json())
+      invoke<any>("fetch_koombiyo_cities", { districtId: String(matchedDistrict.district_id) })
         .then((data) => {
           if (Array.isArray(data)) setCities(data);
           else if (Array.isArray(data?.cities)) setCities(data.cities);
@@ -462,7 +461,6 @@ export function OrderTable({ orders }: { orders: Order[] }) {
   }, []);
 
   const openWaybillPdf = useCallback(async (waybill: string) => {
-    const url = `/api/pod?waybillid=${encodeURIComponent(waybill)}`;
     try {
       showToast(`DEBUG: openWaybillPdf executing... waybill=${waybill}`, "info");
       const inTauri = isTauri() || (typeof window !== "undefined" && window.hasOwnProperty("__TAURI_INTERNALS__"));
@@ -470,9 +468,9 @@ export function OrderTable({ orders }: { orders: Order[] }) {
 
       if (inTauri) {
         showToast("DEBUG: Fetching PDF...", "info");
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`Failed to fetch PDF: ${res.statusText}`);
-        const arrayBuffer = await res.arrayBuffer();
+        const cookie = localStorage.getItem("koombiyo_session") || "";
+        const bytes = await invoke<number[]>("fetch_pod", { waybillid: waybill, cookie });
+        const arrayBuffer = new Uint8Array(bytes).buffer;
 
         showToast("DEBUG: Calling save dialog...", "info");
         const filePath = await save({
@@ -503,15 +501,14 @@ export function OrderTable({ orders }: { orders: Order[] }) {
 
   const ensureWaybillForOrder = useCallback(
     async (orderId: string) => {
-      const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}`);
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
+      let detail: OrderDetails | undefined;
+      try {
+        detail = await invoke<OrderDetails>("get_order_details", { orderId: String(orderId) });
+      } catch (err) {
         throw new Error(
-          data?.error || `Failed to fetch details for order #${orderId}.`,
+          (err as string) || `Failed to fetch details for order #${orderId}.`,
         );
       }
-
-      const detail: OrderDetails | undefined = data?.order;
       const waybill = detail?.fields ? getWaybillFromFields(detail.fields) : "";
       if (!waybill) {
         throw new Error(`Order #${orderId} does not have a waybill yet.`);
@@ -585,24 +582,33 @@ export function OrderTable({ orders }: { orders: Order[] }) {
           setPdfStatusText("Generating PDF document...");
           setPdfProgress(90);
 
-          const res = await fetch("/api/pod/bulk", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ waybillIds }),
-          });
+          const cookie = localStorage.getItem("koombiyo_session") || "";
+          const mergedPdf = await PDFDocument.create();
 
-          if (!res.ok) {
-            const data = await res.json().catch(() => ({}));
-            throw new Error(data?.error || "Failed to generate bulk PDF.");
+          let successfullyMergedCount = 0;
+          for (const waybillid of waybillIds) {
+            try {
+              const bytes = await invoke<number[]>("fetch_pod", { waybillid, cookie });
+              const pdf = await PDFDocument.load(new Uint8Array(bytes));
+              const copiedPages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
+              copiedPages.forEach((page) => mergedPdf.addPage(page));
+              successfullyMergedCount++;
+            } catch (err) {
+              console.error(`Error processing PDF data for waybill ${waybillid}:`, err);
+            }
           }
+
+          if (successfullyMergedCount === 0) {
+            throw new Error("Failed to retrieve any valid POD PDFs.");
+          }
+
           setPdfStatusText("Downloading...");
           setPdfProgress(95);
 
-          const blob = await res.blob();
-
+          const mergedBytes = await mergedPdf.save();
           const inTauri = isTauri() || (typeof window !== "undefined" && window.hasOwnProperty("__TAURI_INTERNALS__"));
           if (inTauri) {
-            const arrayBuffer = await blob.arrayBuffer();
+            const arrayBuffer = mergedBytes.buffer;
             const filePath = await save({
               title: "Save Bulk Waybills PDF",
               filters: [{ name: "PDF", extensions: ["pdf"] }],
@@ -717,14 +723,7 @@ export function OrderTable({ orders }: { orders: Order[] }) {
     setIsEditMode(false);
 
     try {
-      const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}`);
-      const data = await res.json().catch(() => ({}));
-
-      if (!res.ok) {
-        throw new Error(data?.error || "Failed to fetch order details.");
-      }
-
-      const orderDetails: OrderDetails = data?.order;
+      const orderDetails = await invoke<OrderDetails>("get_order_details", { orderId: String(orderId) });
       setSelectedOrderDetails(orderDetails);
 
       const values: Record<string, string> = {};
@@ -765,22 +764,11 @@ export function OrderTable({ orders }: { orders: Order[] }) {
     setDetailsError("");
 
     try {
-      const res = await fetch(
-        `/api/orders/${encodeURIComponent(selectedOrderId)}`,
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ updates }),
-        },
-      );
+      const updatedDetail = await invoke<OrderDetails>("update_order_details", {
+        orderId: String(selectedOrderId),
+        updates
+      });
 
-      const data = await res.json().catch(() => ({}));
-
-      if (!res.ok) {
-        throw new Error(data?.error || "Failed to update order details.");
-      }
-
-      const updatedDetail: OrderDetails = data?.order;
       setSelectedOrderDetails(updatedDetail);
 
       const values: Record<string, string> = {};
@@ -817,16 +805,11 @@ export function OrderTable({ orders }: { orders: Order[] }) {
   ) => {
     setIsProcessing(true);
     try {
-      const res = await fetch("/api/orders/status", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orderId, status }),
+      await invoke("update_order_status", {
+        orderId: String(orderId),
+        status,
+        waybillId: null
       });
-
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data?.error || "Failed to update order status.");
-      }
 
       syncOrderStatus(orderId, status);
       showToast(`Order #${orderId} status changed to ${status}.`, "success");
@@ -863,22 +846,16 @@ export function OrderTable({ orders }: { orders: Order[] }) {
     try {
       const results = await Promise.all(
         orderIds.map(async (orderId) => {
-          const res = await fetch("/api/orders/status", {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ orderId, status }),
-          });
-
-          const data = await res.json().catch(() => ({}));
-          if (!res.ok) {
+          try {
+            await invoke("update_order_status", { orderId: String(orderId), status, waybillId: null });
+            return { orderId, success: true };
+          } catch (err) {
             return {
               orderId,
               success: false,
-              error: String(data?.error || "Failed to update order status."),
+              error: (err as string) || "Failed to update order status.",
             };
           }
-
-          return { orderId, success: true };
         }),
       );
 
@@ -927,14 +904,7 @@ export function OrderTable({ orders }: { orders: Order[] }) {
     showToast(`Processing ${toSend.length} order(s)...`, "info");
 
     try {
-      const res = await fetch("/api/koombiyo/send-orders", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orders: toSend }),
-      });
-
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.error || "Failed to send orders.");
+      const data = await invoke<any>("send_koombiyo_orders", { orders: toSend });
 
       if (Array.isArray(data?.logs)) {
         for (const line of data.logs) {
@@ -1260,11 +1230,18 @@ export function OrderTable({ orders }: { orders: Order[] }) {
           <Button
             variant="outline"
             size="sm"
-            disabled={isPending}
-            onClick={() => startTransition(() => router.refresh())}
+            disabled={isRefreshing}
+            onClick={async () => {
+              if (onRefresh) {
+                setIsRefreshing(true);
+                try { await onRefresh(); } finally { setIsRefreshing(false); }
+              } else {
+                router.refresh();
+              }
+            }}
             className="cursor-pointer"
           >
-            <RefreshCw className={`h-4 w-4 mr-2 ${isPending ? "animate-spin" : ""}`} />
+            <RefreshCw className={`h-4 w-4 mr-2 ${isRefreshing ? "animate-spin" : ""}`} />
             Refresh
           </Button>
         </div>
