@@ -3,6 +3,8 @@ mod google_sheets;
 mod woocommerce;
 mod koombiyo_orders;
 
+use tauri::Manager;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -27,6 +29,21 @@ pub fn run() {
             let _ = dotenvy::from_filename(".env.local");
             let _ = dotenvy::from_filename("../.env.local");
             let _ = dotenvy::dotenv(); // Handles standard .env discovery upwards
+
+            // In packaged builds (e.g. Windows installer), load bundled env files
+            // from the app resource directory when present.
+            if let Ok(resource_dir) = app.path().resource_dir() {
+                let candidates = [
+                    resource_dir.join(".env.production"),
+                    resource_dir.join(".env"),
+                ];
+
+                for path in candidates {
+                    if path.exists() {
+                        let _ = dotenvy::from_path(&path);
+                    }
+                }
+            }
 
             if cfg!(debug_assertions) {
                 app.handle().plugin(
