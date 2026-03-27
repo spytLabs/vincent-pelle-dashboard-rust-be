@@ -10,6 +10,9 @@ static PUBLIC_SHEETS_API_FORBIDDEN: AtomicBool = AtomicBool::new(false);
 static HTTP_CLIENT: OnceLock<Client> = OnceLock::new();
 static SHEET_CACHE: Mutex<Option<SheetCacheEntry>> = Mutex::new(None);
 const DEFAULT_SHEET_CACHE_TTL_SECS: u64 = 300;
+const DEFAULT_GOOGLE_SHEET_ID: &str = "1bjlF7TI7izjeY8-qKuXrfrCQZaDAW0wMWbv9rkPrtF0";
+const DEFAULT_GOOGLE_SHEET_NAME: &str = "Orders";
+const DEFAULT_GOOGLE_SHEET_ANON_WRITE_URL: &str = "https://script.google.com/macros/s/AKfycbxsSxjcP7FlTBUljkqobbOezDA24xNfWSbMNZnRdqqA0gqWWNQKNxW1dGbeCUn9pS5r/exec";
 
 #[derive(Clone)]
 struct SheetCacheEntry {
@@ -68,16 +71,13 @@ fn set_cached_sheet_row(data: &SheetData, row_idx: usize, row: &[String]) {
     }
 }
 fn get_anon_write_url() -> Result<String, String> {
-    env::var("GOOGLE_SHEET_ANON_WRITE_URL")
+    let url = env::var("GOOGLE_SHEET_ANON_WRITE_URL")
+        .ok()
         .map(|s| s.trim().to_string())
-        .map_err(|_| "Missing GOOGLE_SHEET_ANON_WRITE_URL".to_string())
-        .and_then(|v| {
-            if v.is_empty() {
-                Err("GOOGLE_SHEET_ANON_WRITE_URL is empty".to_string())
-            } else {
-                Ok(v)
-            }
-        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_GOOGLE_SHEET_ANON_WRITE_URL.to_string());
+
+    Ok(url)
 }
 
 async fn post_anon_write(payload: &Value) -> Result<(), String> {
@@ -230,8 +230,16 @@ pub async fn get_sheet_data() -> Result<SheetData, String> {
         return Ok(cached);
     }
 
-    let spreadsheet_id = env::var("GOOGLE_SHEET_ID").map_err(|_| "Missing GOOGLE_SHEET_ID".to_string())?;
-    let sheet_name = env::var("GOOGLE_SHEET_NAME").unwrap_or_else(|_| "Orders".to_string());
+    let spreadsheet_id = env::var("GOOGLE_SHEET_ID")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_GOOGLE_SHEET_ID.to_string());
+    let sheet_name = env::var("GOOGLE_SHEET_NAME")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_GOOGLE_SHEET_NAME.to_string());
     let encoded_sheet_name = urlencoding::encode(&sheet_name);
     let api_key = env::var("GOOGLE_API_KEY").ok().map(|s| s.trim().to_string());
 

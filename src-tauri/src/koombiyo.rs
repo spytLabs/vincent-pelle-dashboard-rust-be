@@ -5,6 +5,24 @@ use std::env;
 const KOOMBIYO_LOGIN_URL: &str = "https://koombiyodelivery.lk/custSignin";
 const KOOMBIYO_ACCOUNT_URL: &str = "https://koombiyodelivery.lk/myaccount";
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+const DEFAULT_KOOMBIYO_API_KEY: &str = "SLCkDRHdhKjyexZseTLx";
+const DEFAULT_KOOMBIYO_BASE_URL: &str = "https://application.koombiyodelivery.lk/api";
+
+fn koombiyo_api_key() -> String {
+    env::var("KOOMBIYO_API_KEY")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_KOOMBIYO_API_KEY.to_string())
+}
+
+fn koombiyo_base_url() -> String {
+    env::var("KOOMBIYO_BASE_URL")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_KOOMBIYO_BASE_URL.to_string())
+}
 
 #[tauri::command]
 pub async fn login_koombiyo(username: String, password: String) -> Result<String, String> {
@@ -86,8 +104,8 @@ pub async fn validate_koombiyo(cookie: String) -> Result<bool, String> {
 
 #[tauri::command]
 pub async fn fetch_koombiyo_districts() -> Result<Value, String> {
-    let api_key = env::var("KOOMBIYO_API_KEY").map_err(|_| "KOOMBIYO_API_KEY is missing".to_string())?;
-    let base_url = env::var("KOOMBIYO_BASE_URL").unwrap_or_else(|_| "https://koombiyodelivery.lk/api".to_string());
+    let api_key = koombiyo_api_key();
+    let base_url = koombiyo_base_url();
     
     let url = format!("{}/Districts/users", base_url);
     let body = format!("apikey={}", urlencoding::encode(&api_key));
@@ -111,8 +129,8 @@ pub async fn fetch_koombiyo_districts() -> Result<Value, String> {
 
 #[tauri::command]
 pub async fn fetch_koombiyo_cities(district_id: String) -> Result<Value, String> {
-    let api_key = env::var("KOOMBIYO_API_KEY").map_err(|_| "KOOMBIYO_API_KEY is missing".to_string())?;
-    let base_url = env::var("KOOMBIYO_BASE_URL").unwrap_or_else(|_| "https://koombiyodelivery.lk/api".to_string());
+    let api_key = koombiyo_api_key();
+    let base_url = koombiyo_base_url();
     
     let url = format!("{}/Cities/users", base_url);
     let body = format!("apikey={}&district_id={}", urlencoding::encode(&api_key), urlencoding::encode(&district_id));
@@ -170,8 +188,8 @@ pub async fn fetch_pod(waybillid: String, cookie: String) -> Result<Vec<u8>, Str
 
 #[tauri::command]
 pub async fn check_koombiyo_waybills() -> Result<usize, String> {
-    let api_key = env::var("KOOMBIYO_API_KEY").map_err(|_| "KOOMBIYO_API_KEY is missing")?;
-    let base_url = env::var("KOOMBIYO_BASE_URL").unwrap_or_else(|_| "https://koombiyodelivery.lk/api".to_string());
+    let api_key = koombiyo_api_key();
+    let base_url = koombiyo_base_url();
     
     let url = format!("{}/Waybils/users", base_url);
     let body = format!("apikey={}&limit=1000", urlencoding::encode(&api_key));

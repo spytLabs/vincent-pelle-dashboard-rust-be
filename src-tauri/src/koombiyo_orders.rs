@@ -3,6 +3,25 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::env;
 
+const DEFAULT_KOOMBIYO_API_KEY: &str = "SLCkDRHdhKjyexZseTLx";
+const DEFAULT_KOOMBIYO_BASE_URL: &str = "https://application.koombiyodelivery.lk/api";
+
+fn koombiyo_api_key() -> String {
+    env::var("KOOMBIYO_API_KEY")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_KOOMBIYO_API_KEY.to_string())
+}
+
+fn koombiyo_base_url() -> String {
+    env::var("KOOMBIYO_BASE_URL")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_KOOMBIYO_BASE_URL.to_string())
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct IncomingOrder {
@@ -76,8 +95,8 @@ fn is_cash_on_delivery(payment_method: Option<&String>) -> bool {
 }
 
 async fn allocate_waybill() -> Result<String, String> {
-    let api_key = env::var("KOOMBIYO_API_KEY").map_err(|_| "KOOMBIYO_API_KEY is missing")?;
-    let base_url = env::var("KOOMBIYO_BASE_URL").unwrap_or_else(|_| "https://koombiyodelivery.lk/api".to_string());
+    let api_key = koombiyo_api_key();
+    let base_url = koombiyo_base_url();
     
     let url = format!("{}/Waybils/users", base_url);
     let body = format!("apikey={}&limit=1", urlencoding::encode(&api_key));
@@ -168,8 +187,8 @@ async fn add_order(
     description: &str,
     cod: f64
 ) -> Result<(), String> {
-    let api_key = env::var("KOOMBIYO_API_KEY").map_err(|_| "KOOMBIYO_API_KEY is missing")?;
-    let base_url = env::var("KOOMBIYO_BASE_URL").unwrap_or_else(|_| "https://koombiyodelivery.lk/api".to_string());
+    let api_key = koombiyo_api_key();
+    let base_url = koombiyo_base_url();
     
     let url = format!("{}/Addorders/users", base_url);
     

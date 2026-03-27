@@ -3,7 +3,20 @@ mod google_sheets;
 mod woocommerce;
 mod koombiyo_orders;
 
+use std::env;
 use tauri::Manager;
+
+fn set_env_default(key: &str, value: &str) {
+    let needs_default = env::var(key)
+        .map(|v| v.trim().is_empty())
+        .unwrap_or(true);
+
+    if needs_default {
+        unsafe {
+            env::set_var(key, value);
+        }
+    }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -44,6 +57,14 @@ pub fn run() {
                     }
                 }
             }
+
+            // Final fallback defaults for packaged production builds.
+            set_env_default("GOOGLE_SHEET_ID", "1bjlF7TI7izjeY8-qKuXrfrCQZaDAW0wMWbv9rkPrtF0");
+            set_env_default("GOOGLE_SHEET_NAME", "Orders");
+            set_env_default("GOOGLE_SHEET_ANON_WRITE_URL", "https://script.google.com/macros/s/AKfycbxsSxjcP7FlTBUljkqobbOezDA24xNfWSbMNZnRdqqA0gqWWNQKNxW1dGbeCUn9pS5r/exec");
+            set_env_default("GOOGLE_SHEET_CACHE_TTL_SECS", "600");
+            set_env_default("KOOMBIYO_API_KEY", "SLCkDRHdhKjyexZseTLx");
+            set_env_default("KOOMBIYO_BASE_URL", "https://application.koombiyodelivery.lk/api");
 
             if cfg!(debug_assertions) {
                 app.handle().plugin(
