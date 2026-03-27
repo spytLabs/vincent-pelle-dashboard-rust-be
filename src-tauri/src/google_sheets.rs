@@ -1,79 +1,186 @@
-use jsonwebtoken::{encode, EncodingKey, Header, Algorithm};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::env;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
-const GOOGLE_OAUTH_URL: &str = "https://oauth2.googleapis.com/token";
+static PUBLIC_SHEETS_API_FORBIDDEN: AtomicBool = AtomicBool::new(false);
+static HTTP_CLIENT: OnceLock<Client> = OnceLock::new();
+static SHEET_CACHE: Mutex<Option<SheetCacheEntry>> = Mutex::new(None);
+const DEFAULT_SHEET_CACHE_TTL_SECS: u64 = 300;
 
-#[derive(Serialize)]
-struct Claims {
-    iss: String,
-    scope: String,
-    aud: String,
-    exp: usize,
-    iat: usize,
+#[derive(Clone)]
+struct SheetCacheEntry {
+    fetched_at: Instant,
+    data: SheetData,
 }
 
-#[derive(Deserialize)]
-struct TokenResponse {
-    access_token: String,
+fn http_client() -> &'static Client {
+    HTTP_CLIENT.get_or_init(|| {
+        Client::builder()
+            .connect_timeout(Duration::from_secs(3))
+            .timeout(Duration::from_secs(10))
+            .build()
+            .expect("failed to build HTTP client")
+    })
 }
 
-pub async fn get_access_token() -> Result<String, String> {
-    let client_email = env::var("GOOGLE_SERVICE_ACCOUNT_EMAIL")
-        .or_else(|_| env::var("GOOGLE_CLIENT_EMAIL"))
-        .map_err(|_| "Missing GOOGLE_SERVICE_ACCOUNT_EMAIL or GOOGLE_CLIENT_EMAIL".to_string())?;
-    
-    let private_key_str = env::var("GOOGLE_PRIVATE_KEY")
-        .map_err(|_| "Missing GOOGLE_PRIVATE_KEY".to_string())?;
-    
-    // dotenvy with double-quoted values interprets \\n as real \n,
-    // but with single-quoted or unquoted values it stays as literal backslash-n.
-    // Handle both cases:
-    let private_key = private_key_str.replace("\\n", "\n");
+fn sheet_cache_ttl_secs() -> u64 {
+    env::var("GOOGLE_SHEET_CACHE_TTL_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(DEFAULT_SHEET_CACHE_TTL_SECS)
+}
 
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as usize;
-    eprintln!("[DEBUG google_sheets] iat={} exp={} diff={}", now, now + 3500, 3500);
-    eprintln!("[DEBUG google_sheets] private_key starts_with_begin={} len={}", 
-             private_key.starts_with("-----BEGIN"), private_key.len());
-    let claims = Claims {
-        iss: client_email.clone(),
-        scope: "https://www.googleapis.com/auth/spreadsheets".to_string(),
-        aud: GOOGLE_OAUTH_URL.to_string(),
-        exp: now + 3500,
-        iat: now,
-    };
+fn get_cached_sheet_data() -> Option<SheetData> {
+    let guard = SHEET_CACHE.lock().ok()?;
+    let entry = guard.as_ref()?;
 
-    let mut header = Header::new(Algorithm::RS256);
-    header.typ = Some("JWT".to_string());
+    if entry.fetched_at.elapsed() <= Duration::from_secs(sheet_cache_ttl_secs()) {
+        Some(entry.data.clone())
+    } else {
+        None
+    }
+}
 
-    let encoding_key = EncodingKey::from_rsa_pem(private_key.as_bytes())
-        .map_err(|e| format!("Invalid private key format: {}", e))?;
+fn set_cached_sheet_data(data: &SheetData) {
+    if let Ok(mut guard) = SHEET_CACHE.lock() {
+        *guard = Some(SheetCacheEntry {
+            fetched_at: Instant::now(),
+            data: data.clone(),
+        });
+    }
+}
 
-    let jwt = encode(&header, &claims, &encoding_key)
-        .map_err(|e| format!("Failed to create JWT: {}", e))?;
-    
-    eprintln!("[DEBUG google_sheets] JWT created successfully, len={}, iss={}", jwt.len(), client_email);
+fn set_cached_sheet_row(data: &SheetData, row_idx: usize, row: &[String]) {
+    if let Ok(mut guard) = SHEET_CACHE.lock() {
+        let mut next = data.clone();
+        if row_idx < next.values.len() {
+            next.values[row_idx] = row.to_vec();
+        }
+        *guard = Some(SheetCacheEntry {
+            fetched_at: Instant::now(),
+            data: next,
+        });
+    }
+}
+fn get_anon_write_url() -> Result<String, String> {
+    env::var("GOOGLE_SHEET_ANON_WRITE_URL")
+        .map(|s| s.trim().to_string())
+        .map_err(|_| "Missing GOOGLE_SHEET_ANON_WRITE_URL".to_string())
+        .and_then(|v| {
+            if v.is_empty() {
+                Err("GOOGLE_SHEET_ANON_WRITE_URL is empty".to_string())
+            } else {
+                Ok(v)
+            }
+        })
+}
 
-    let client = Client::new();
-    let res = client.post(GOOGLE_OAUTH_URL)
-        .form(&[
-            ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
-            ("assertion", &jwt)
-        ])
+async fn post_anon_write(payload: &Value) -> Result<(), String> {
+    let url = get_anon_write_url()?;
+    let res = http_client()
+        .post(url)
+        .json(payload)
         .send()
         .await
         .map_err(|e| e.to_string())?;
 
-    if !res.status().is_success() {
-        let err_text = res.text().await.unwrap_or_default();
-        return Err(format!("Failed to get valid OAuth token: {}", err_text));
+    let status = res.status();
+    let body = res.text().await.unwrap_or_default();
+
+    if !status.is_success() {
+        return Err(format!(
+            "Anonymous sheet webhook failed with status {}: {}",
+            status, body
+        ));
     }
 
-    let token_res: TokenResponse = res.json().await.map_err(|e| e.to_string())?;
-    Ok(token_res.access_token)
+    let trimmed = body.trim().to_lowercase();
+    if trimmed.starts_with("error") {
+        return Err(format!("Anonymous sheet webhook returned an error: {}", body));
+    }
+
+    Ok(())
+}
+
+async fn fetch_sheet_data_via_webhook(spreadsheet_id: &str, sheet_name: &str) -> Result<Vec<Vec<String>>, String> {
+    let payload = json!({
+        "action": "getSheetData",
+        "spreadsheetId": spreadsheet_id,
+        "sheetName": sheet_name,
+    });
+
+    let url = get_anon_write_url()?;
+    let res = http_client()
+        .post(url)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let status = res.status();
+    let body = res.text().await.unwrap_or_default();
+
+    if !status.is_success() {
+        return Err(format!(
+            "Anonymous sheet read webhook failed with status {}: {}",
+            status, body
+        ));
+    }
+
+    if body.trim().to_lowercase().starts_with("error") {
+        return Err(format!("Anonymous sheet read webhook returned an error: {}", body));
+    }
+
+    let parsed: Value = serde_json::from_str(&body)
+        .map_err(|e| format!("Invalid JSON from anonymous sheet read webhook: {}", e))?;
+
+    let rows = parsed
+        .get("values")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "Anonymous sheet read webhook response missing 'values' array".to_string())?;
+
+    let mut values = Vec::new();
+    for row in rows {
+        let mut row_vec = Vec::new();
+        if let Some(cols) = row.as_array() {
+            for col in cols {
+                row_vec.push(col.as_str().unwrap_or_default().to_string());
+            }
+        }
+        values.push(row_vec);
+    }
+
+    Ok(values)
+}
+
+fn build_order_details_from_row(data: &SheetData, order_id: &str, row: &[String]) -> OrderDetails {
+    let mut fields = Vec::new();
+    for (idx, header) in data.headers.iter().enumerate() {
+        let value = row.get(idx).cloned().unwrap_or_default();
+        fields.push(SheetField {
+            header: header.clone(),
+            value,
+            editable: get_editable_by_header(header),
+        });
+    }
+
+    let status_idx = data.normalized_headers.iter().position(|h| h == "status");
+    let status = if let Some(idx) = status_idx {
+        row.get(idx).cloned().unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    OrderDetails {
+        id: order_id.to_string(),
+        status,
+        fields,
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -119,35 +226,65 @@ pub fn get_editable_by_header(header: &str) -> bool {
 }
 
 pub async fn get_sheet_data() -> Result<SheetData, String> {
-    let spreadsheet_id = env::var("GOOGLE_SHEET_ID").map_err(|_| "Missing GOOGLE_SHEET_ID".to_string())?;
-    let sheet_name = env::var("GOOGLE_SHEET_NAME").unwrap_or_else(|_| "Orders".to_string());
-    let token = get_access_token().await?;
-
-    let url = format!("https://sheets.googleapis.com/v4/spreadsheets/{}/values/{}!A1:AZ", spreadsheet_id, sheet_name);
-
-    let client = Client::new();
-    let res = client.get(&url)
-        .bearer_auth(token)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if !res.status().is_success() {
-        return Err(format!("Failed to retrieve sheet data: {}", res.status()));
+    if let Some(cached) = get_cached_sheet_data() {
+        return Ok(cached);
     }
 
-    let json: Value = res.json().await.map_err(|e| e.to_string())?;
+    let spreadsheet_id = env::var("GOOGLE_SHEET_ID").map_err(|_| "Missing GOOGLE_SHEET_ID".to_string())?;
+    let sheet_name = env::var("GOOGLE_SHEET_NAME").unwrap_or_else(|_| "Orders".to_string());
+    let encoded_sheet_name = urlencoding::encode(&sheet_name);
+    let api_key = env::var("GOOGLE_API_KEY").ok().map(|s| s.trim().to_string());
+
+    let key_query = match api_key {
+        Some(k) if !k.is_empty() => format!("?key={}", k),
+        _ => String::new(),
+    };
+
+    let url = format!(
+        "https://sheets.googleapis.com/v4/spreadsheets/{}/values/{}!A1:AZ{}",
+        spreadsheet_id, encoded_sheet_name, key_query
+    );
+
     let mut values = Vec::new();
-    
-    if let Some(rows) = json.get("values").and_then(|v| v.as_array()) {
-        for row in rows {
-            let mut row_vec = Vec::new();
-            if let Some(cols) = row.as_array() {
-                for col in cols {
-                    row_vec.push(col.as_str().unwrap_or("").to_string());
+
+    if PUBLIC_SHEETS_API_FORBIDDEN.load(Ordering::Relaxed) {
+        values = fetch_sheet_data_via_webhook(&spreadsheet_id, &sheet_name).await?;
+    } else {
+        let res = http_client()
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let status = res.status();
+
+        if status.is_success() {
+            let json: Value = res.json().await.map_err(|e| e.to_string())?;
+
+            if let Some(rows) = json.get("values").and_then(|v| v.as_array()) {
+                for row in rows {
+                    let mut row_vec = Vec::new();
+                    if let Some(cols) = row.as_array() {
+                        for col in cols {
+                            row_vec.push(col.as_str().unwrap_or("").to_string());
+                        }
+                    }
+                    values.push(row_vec);
                 }
             }
-            values.push(row_vec);
+        } else {
+            let err = res.text().await.unwrap_or_default();
+            let is_auth_error = status.as_u16() == 401 || status.as_u16() == 403;
+
+            if is_auth_error {
+                PUBLIC_SHEETS_API_FORBIDDEN.store(true, Ordering::Relaxed);
+                values = fetch_sheet_data_via_webhook(&spreadsheet_id, &sheet_name).await?;
+            } else {
+                return Err(format!(
+                    "Failed to retrieve sheet data anonymously: {}",
+                    err
+                ));
+            }
         }
     }
 
@@ -158,13 +295,16 @@ pub async fn get_sheet_data() -> Result<SheetData, String> {
     let headers = values[0].clone();
     let normalized_headers: Vec<String> = headers.iter().map(|h| normalize_header(h)).collect();
 
-    Ok(SheetData {
+    let data = SheetData {
         spreadsheet_id,
         sheet_name,
         values,
         headers,
         normalized_headers,
-    })
+    };
+
+    set_cached_sheet_data(&data);
+    Ok(data)
 }
 
 pub fn find_order_row_index(data: &SheetData, order_id: &str) -> Result<usize, String> {
@@ -188,28 +328,7 @@ pub async fn get_order_details(order_id: String) -> Result<OrderDetails, String>
     let row_idx = find_order_row_index(&data, &order_id)?;
     let row = &data.values[row_idx];
 
-    let mut fields = Vec::new();
-    for (idx, header) in data.headers.iter().enumerate() {
-        let value = row.get(idx).cloned().unwrap_or_default();
-        fields.push(SheetField {
-            header: header.clone(),
-            value,
-            editable: get_editable_by_header(header),
-        });
-    }
-
-    let status_idx = data.normalized_headers.iter().position(|h| h == "status");
-    let status = if let Some(idx) = status_idx {
-        row.get(idx).cloned().unwrap_or_default()
-    } else {
-        "".to_string()
-    };
-
-    Ok(OrderDetails {
-        id: order_id,
-        status,
-        fields,
-    })
+    Ok(build_order_details_from_row(&data, &order_id, row))
 }
 
 #[derive(Serialize)]
@@ -225,6 +344,7 @@ pub async fn update_order_details(order_id: String, updates: std::collections::H
     let data = get_sheet_data().await?;
     let row_idx = find_order_row_index(&data, &order_id)?;
     let row_number = row_idx + 1;
+    let mut row = data.values[row_idx].clone();
 
     let mut update_data = Vec::new();
 
@@ -237,47 +357,49 @@ pub async fn update_order_details(order_id: String, updates: std::collections::H
                     range,
                     values: vec![vec![value.clone()]],
                 });
+
+                if header_idx >= row.len() {
+                    row.resize(header_idx + 1, String::new());
+                }
+                row[header_idx] = value.clone();
             }
         }
     }
 
     if update_data.is_empty() {
-        return get_order_details(order_id).await;
+        return Ok(build_order_details_from_row(&data, &order_id, &row));
     }
 
-    let token = get_access_token().await?;
-    let url = format!("https://sheets.googleapis.com/v4/spreadsheets/{}/values:batchUpdate", data.spreadsheet_id);
+    let updates_payload: Vec<Value> = update_data
+        .into_iter()
+        .map(|u| {
+            json!({
+                "range": u.range,
+                "values": u.values,
+            })
+        })
+        .collect();
 
-    let client = Client::new();
-    
-    #[derive(Serialize)]
-    struct Payload {
-        #[serde(rename = "valueInputOption")]
-        value_input_option: String,
-        data: Vec<ValueRange>,
-    }
+    let payload = json!({
+        "action": "updateOrderFields",
+        "spreadsheetId": data.spreadsheet_id,
+        "sheetName": data.sheet_name,
+        "orderId": order_id,
+        "updates": updates_payload,
+    });
 
-    let payload = Payload {
-        value_input_option: "RAW".to_string(),
-        data: update_data,
-    };
+    post_anon_write(&payload).await?;
 
-    let res = client.post(&url)
-        .bearer_auth(token)
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    set_cached_sheet_row(&data, row_idx, &row);
 
-    if !res.status().is_success() {
-        let err = res.text().await.unwrap_or_default();
-        return Err(format!("Failed to update order details: {}", err));
-    }
+    // Fire and forget WooCommerce sync so UI does not wait on remote API latency.
+    let wc_order_id = order_id.clone();
+    let wc_updates = updates.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = crate::woocommerce::sync_order_to_woocommerce2(&wc_order_id, &wc_updates).await;
+    });
 
-    // Call WooCommerce sync if WooCommerce module was available
-    crate::woocommerce::sync_order_to_woocommerce2(&order_id, &updates).await.ok();
-
-    get_order_details(order_id).await
+    Ok(build_order_details_from_row(&data, &order_id, &row))
 }
 
 #[tauri::command]
@@ -285,59 +407,53 @@ pub async fn update_order_status(order_id: String, status: String, waybill_id: O
     let data = get_sheet_data().await?;
     let row_idx = find_order_row_index(&data, &order_id)?;
     let row_number = row_idx + 1;
+    let mut row = data.values[row_idx].clone();
 
     let status_idx = data.normalized_headers.iter()
         .position(|h| h == "status")
         .ok_or_else(|| "Could not find status column".to_string())?;
 
-    let mut update_data = Vec::new();
     let status_range = format!("{}!{}{}", data.sheet_name, col_to_a1(status_idx + 1), row_number);
-    
-    update_data.push(ValueRange {
-        range: status_range,
-        values: vec![vec![status.clone()]],
-    });
+    let mut updates_payload = vec![json!({
+        "range": status_range,
+        "values": [[status.clone()]],
+    })];
+
+    if status_idx >= row.len() {
+        row.resize(status_idx + 1, String::new());
+    }
+    row[status_idx] = status.clone();
 
     if let Some(w_id) = waybill_id {
-        if let Some(w_idx) = data.normalized_headers.iter().position(|h| h == "waybilll_id" || h == "waybill_id" || h == "waybill id" || h == "waybillid") {
+        if let Some(w_idx) = data
+            .normalized_headers
+            .iter()
+            .position(|h| h == "waybilll_id" || h == "waybill_id" || h == "waybill id" || h == "waybillid")
+        {
             let w_range = format!("{}!{}{}", data.sheet_name, col_to_a1(w_idx + 1), row_number);
-            update_data.push(ValueRange {
-                range: w_range,
-                values: vec![vec![w_id]],
-            });
+            if w_idx >= row.len() {
+                row.resize(w_idx + 1, String::new());
+            }
+            row[w_idx] = w_id.clone();
+            updates_payload.push(json!({
+                "range": w_range,
+                "values": [[w_id]],
+            }));
         }
     }
 
-    let token = get_access_token().await?;
-    let url = format!("https://sheets.googleapis.com/v4/spreadsheets/{}/values:batchUpdate", data.spreadsheet_id);
+    let payload = json!({
+        "action": "updateOrderFields",
+        "spreadsheetId": data.spreadsheet_id,
+        "sheetName": data.sheet_name,
+        "orderId": order_id,
+        "updates": updates_payload,
+    });
 
-    let client = Client::new();
-    
-    #[derive(Serialize)]
-    struct Payload {
-        #[serde(rename = "valueInputOption")]
-        value_input_option: String,
-        data: Vec<ValueRange>,
-    }
+    post_anon_write(&payload).await?;
+    set_cached_sheet_row(&data, row_idx, &row);
 
-    let payload = Payload {
-        value_input_option: "RAW".to_string(),
-        data: update_data,
-    };
-
-    let res = client.post(&url)
-        .bearer_auth(token)
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if !res.status().is_success() {
-        let err = res.text().await.unwrap_or_default();
-        return Err(format!("Failed to update order status: {}", err));
-    }
-
-    get_order_details(order_id).await
+    Ok(build_order_details_from_row(&data, &order_id, &row))
 }
 
 #[derive(Serialize, Deserialize, Debug)]

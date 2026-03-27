@@ -2,8 +2,21 @@ use reqwest::Client;
 use serde::Serialize;
 use serde_json::Value;
 use std::env;
+use std::sync::OnceLock;
+use std::time::Duration;
 
 const WC_API_URL: &str = "https://vinzvault.lk/wp-json/wc/v3";
+static WC_HTTP_CLIENT: OnceLock<Client> = OnceLock::new();
+
+fn wc_http_client() -> &'static Client {
+    WC_HTTP_CLIENT.get_or_init(|| {
+        Client::builder()
+            .connect_timeout(Duration::from_secs(2))
+            .timeout(Duration::from_secs(8))
+            .build()
+            .expect("failed to build WooCommerce HTTP client")
+    })
+}
 
 #[derive(Serialize)]
 struct WcBillingOrShipping {
@@ -59,8 +72,7 @@ pub async fn sync_order_to_woocommerce2(
 
     let url = format!("{}/orders/{}", WC_API_URL, order_id);
 
-    let client = Client::new();
-    let res = client.put(&url)
+    let res = wc_http_client().put(&url)
         .basic_auth(consumer_key, Some(consumer_secret))
         .json(&wc_updates)
         .send()
