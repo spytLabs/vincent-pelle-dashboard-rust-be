@@ -29,14 +29,20 @@ pub async fn get_access_token() -> Result<String, String> {
     let private_key_str = env::var("GOOGLE_PRIVATE_KEY")
         .map_err(|_| "Missing GOOGLE_PRIVATE_KEY".to_string())?;
     
+    // dotenvy with double-quoted values interprets \\n as real \n,
+    // but with single-quoted or unquoted values it stays as literal backslash-n.
+    // Handle both cases:
     let private_key = private_key_str.replace("\\n", "\n");
 
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as usize;
+    eprintln!("[DEBUG google_sheets] iat={} exp={} diff={}", now, now + 3500, 3500);
+    eprintln!("[DEBUG google_sheets] private_key starts_with_begin={} len={}", 
+             private_key.starts_with("-----BEGIN"), private_key.len());
     let claims = Claims {
-        iss: client_email,
+        iss: client_email.clone(),
         scope: "https://www.googleapis.com/auth/spreadsheets".to_string(),
         aud: GOOGLE_OAUTH_URL.to_string(),
-        exp: now + 3600,
+        exp: now + 3500,
         iat: now,
     };
 
@@ -48,6 +54,8 @@ pub async fn get_access_token() -> Result<String, String> {
 
     let jwt = encode(&header, &claims, &encoding_key)
         .map_err(|e| format!("Failed to create JWT: {}", e))?;
+    
+    eprintln!("[DEBUG google_sheets] JWT created successfully, len={}, iss={}", jwt.len(), client_email);
 
     let client = Client::new();
     let res = client.post(GOOGLE_OAUTH_URL)
