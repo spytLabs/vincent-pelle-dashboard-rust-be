@@ -11,12 +11,14 @@
     "fs:allow-write-file",
     "fs:allow-read-file",
     "dialog:default",
-    "shell:default",
     {
       "identifier": "shell:allow-open",
       "allow": [
         {
           "url": "**"
+        },
+        {
+          "path": "**"
         }
       ]
     }

@@ -29,6 +29,18 @@ function doPost(e) {
     else if (action === "getSheetData") {
       return processGetSheetData(e);
     }
+    else if (action === "getOrderDetails") {
+      return processGetOrderDetails(e);
+    }
+    else if (action === "updateOrderFieldsByOrderId") {
+      return processUpdateOrderFieldsByOrderId(e);
+    }
+    else if (action === "updateOrderStatusByOrderId") {
+      return processUpdateOrderStatusByOrderId(e);
+    }
+    else if (action === "fetchOrdersFast") {
+      return processFetchOrdersFast(e);
+    }
     else {
       return ContentService.createTextOutput("Error: No valid action specified in the URL.");
     }

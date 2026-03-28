@@ -12,7 +12,7 @@ static SHEET_CACHE: Mutex<Option<SheetCacheEntry>> = Mutex::new(None);
 const DEFAULT_SHEET_CACHE_TTL_SECS: u64 = 300;
 const DEFAULT_GOOGLE_SHEET_ID: &str = "1bjlF7TI7izjeY8-qKuXrfrCQZaDAW0wMWbv9rkPrtF0";
 const DEFAULT_GOOGLE_SHEET_NAME: &str = "Orders";
-const DEFAULT_GOOGLE_SHEET_ANON_WRITE_URL: &str = "https://script.google.com/macros/s/AKfycbxsSxjcP7FlTBUljkqobbOezDA24xNfWSbMNZnRdqqA0gqWWNQKNxW1dGbeCUn9pS5r/exec";
+const DEFAULT_GOOGLE_SHEET_ANON_WRITE_URL: &str = "https://script.google.com/macros/s/AKfycbwMS9LN0uJOKrQoEy6t9eF9iyI1cvW5qoYbKdEfM5iBQr_Qxo5zt6tUYb668lOwiDF4/exec";
 
 #[derive(Clone)]
 struct SheetCacheEntry {
@@ -107,6 +107,33 @@ async fn post_anon_write(payload: &Value) -> Result<(), String> {
     Ok(())
 }
 
+async fn post_anon_write_json(payload: &Value) -> Result<Value, String> {
+    let url = get_anon_write_url()?;
+    let res = http_client()
+        .post(url)
+        .json(payload)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let status = res.status();
+    let body = res.text().await.unwrap_or_default();
+
+    if !status.is_success() {
+        return Err(format!(
+            "Anonymous sheet webhook failed with status {}: {}",
+            status, body
+        ));
+    }
+
+    if body.trim().to_lowercase().starts_with("error") {
+        return Err(format!("Anonymous sheet webhook returned an error: {}", body));
+    }
+
+    serde_json::from_str::<Value>(&body)
+        .map_err(|e| format!("Anonymous sheet webhook returned invalid JSON: {}", e))
+}
+
 async fn fetch_sheet_data_via_webhook(spreadsheet_id: &str, sheet_name: &str) -> Result<Vec<Vec<String>>, String> {
     let payload = json!({
         "action": "getSheetData",
@@ -159,8 +186,12 @@ async fn fetch_sheet_data_via_webhook(spreadsheet_id: &str, sheet_name: &str) ->
 }
 
 fn build_order_details_from_row(data: &SheetData, order_id: &str, row: &[String]) -> OrderDetails {
+    build_order_details_from_headers(&data.headers, order_id, row)
+}
+
+fn build_order_details_from_headers(headers: &[String], order_id: &str, row: &[String]) -> OrderDetails {
     let mut fields = Vec::new();
-    for (idx, header) in data.headers.iter().enumerate() {
+    for (idx, header) in headers.iter().enumerate() {
         let value = row.get(idx).cloned().unwrap_or_default();
         fields.push(SheetField {
             header: header.clone(),
@@ -169,7 +200,7 @@ fn build_order_details_from_row(data: &SheetData, order_id: &str, row: &[String]
         });
     }
 
-    let status_idx = data.normalized_headers.iter().position(|h| h == "status");
+    let status_idx = headers.iter().position(|h| normalize_header(h) == "status");
     let status = if let Some(idx) = status_idx {
         row.get(idx).cloned().unwrap_or_default()
     } else {
@@ -181,6 +212,117 @@ fn build_order_details_from_row(data: &SheetData, order_id: &str, row: &[String]
         status,
         fields,
     }
+}
+
+fn sheet_target() -> (String, String) {
+    let spreadsheet_id = env::var("GOOGLE_SHEET_ID")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_GOOGLE_SHEET_ID.to_string());
+    let sheet_name = env::var("GOOGLE_SHEET_NAME")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_GOOGLE_SHEET_NAME.to_string());
+    (spreadsheet_id, sheet_name)
+}
+
+fn parse_order_details_webhook(order_id: &str, payload: &Value) -> Result<OrderDetails, String> {
+    let headers_arr = payload
+        .get("headers")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "Webhook response missing headers".to_string())?;
+
+    let row_arr = payload
+        .get("rowValues")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "Webhook response missing rowValues".to_string())?;
+
+    let headers: Vec<String> = headers_arr
+        .iter()
+        .map(|v| v.as_str().unwrap_or_default().to_string())
+        .collect();
+
+    let row: Vec<String> = row_arr
+        .iter()
+        .map(|v| {
+            if let Some(s) = v.as_str() {
+                s.to_string()
+            } else {
+                v.to_string()
+            }
+        })
+        .collect();
+
+    Ok(build_order_details_from_headers(&headers, order_id, &row))
+}
+
+async fn get_order_details_fast(order_id: &str) -> Result<OrderDetails, String> {
+    let (spreadsheet_id, sheet_name) = sheet_target();
+    let payload = json!({
+        "action": "getOrderDetails",
+        "spreadsheetId": spreadsheet_id,
+        "sheetName": sheet_name,
+        "orderId": order_id,
+    });
+
+    let response = post_anon_write_json(&payload).await?;
+    parse_order_details_webhook(order_id, &response)
+}
+
+async fn update_order_details_fast(
+    order_id: &str,
+    updates: &std::collections::HashMap<String, String>,
+) -> Result<OrderDetails, String> {
+    let (spreadsheet_id, sheet_name) = sheet_target();
+    let payload = json!({
+        "action": "updateOrderFieldsByOrderId",
+        "spreadsheetId": spreadsheet_id,
+        "sheetName": sheet_name,
+        "orderId": order_id,
+        "updates": updates,
+    });
+
+    let response = post_anon_write_json(&payload).await?;
+    parse_order_details_webhook(order_id, &response)
+}
+
+async fn update_order_status_fast(
+    order_id: &str,
+    status: &str,
+    waybill_id: Option<&str>,
+) -> Result<OrderDetails, String> {
+    let (spreadsheet_id, sheet_name) = sheet_target();
+    let payload = json!({
+        "action": "updateOrderStatusByOrderId",
+        "spreadsheetId": spreadsheet_id,
+        "sheetName": sheet_name,
+        "orderId": order_id,
+        "status": status,
+        "waybillId": waybill_id.unwrap_or(""),
+    });
+
+    let response = post_anon_write_json(&payload).await?;
+    parse_order_details_webhook(order_id, &response)
+}
+
+async fn fetch_orders_fast() -> Result<Vec<OrderRow>, String> {
+    let (spreadsheet_id, sheet_name) = sheet_target();
+    let payload = json!({
+        "action": "fetchOrdersFast",
+        "spreadsheetId": spreadsheet_id,
+        "sheetName": sheet_name,
+    });
+
+    let response = post_anon_write_json(&payload).await?;
+    let orders_value = response
+        .get("orders")
+        .cloned()
+        .ok_or_else(|| "Webhook response missing orders".to_string())?;
+
+    serde_json::from_value::<Vec<OrderRow>>(orders_value)
+        .map_err(|e| format!("Invalid fast orders payload: {}", e))
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -230,16 +372,7 @@ pub async fn get_sheet_data() -> Result<SheetData, String> {
         return Ok(cached);
     }
 
-    let spreadsheet_id = env::var("GOOGLE_SHEET_ID")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| DEFAULT_GOOGLE_SHEET_ID.to_string());
-    let sheet_name = env::var("GOOGLE_SHEET_NAME")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| DEFAULT_GOOGLE_SHEET_NAME.to_string());
+    let (spreadsheet_id, sheet_name) = sheet_target();
     let encoded_sheet_name = urlencoding::encode(&sheet_name);
     let api_key = env::var("GOOGLE_API_KEY").ok().map(|s| s.trim().to_string());
 
@@ -332,6 +465,10 @@ pub fn find_order_row_index(data: &SheetData, order_id: &str) -> Result<usize, S
 
 #[tauri::command]
 pub async fn get_order_details(order_id: String) -> Result<OrderDetails, String> {
+    if let Ok(details) = get_order_details_fast(&order_id).await {
+        return Ok(details);
+    }
+
     let data = get_sheet_data().await?;
     let row_idx = find_order_row_index(&data, &order_id)?;
     let row = &data.values[row_idx];
@@ -349,6 +486,25 @@ pub struct ValueRange {
 
 #[tauri::command]
 pub async fn update_order_details(order_id: String, updates: std::collections::HashMap<String, String>) -> Result<OrderDetails, String> {
+    let mut fast_updates = std::collections::HashMap::new();
+    for (header, value) in &updates {
+        let normalized = normalize_header(header);
+        if normalized == "city" || normalized == "district" {
+            fast_updates.insert(header.clone(), value.clone());
+        }
+    }
+
+    if !fast_updates.is_empty() {
+        if let Ok(details) = update_order_details_fast(&order_id, &fast_updates).await {
+            let wc_order_id = order_id.clone();
+            let wc_updates = updates.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = crate::woocommerce::sync_order_to_woocommerce2(&wc_order_id, &wc_updates).await;
+            });
+            return Ok(details);
+        }
+    }
+
     let data = get_sheet_data().await?;
     let row_idx = find_order_row_index(&data, &order_id)?;
     let row_number = row_idx + 1;
@@ -412,6 +568,10 @@ pub async fn update_order_details(order_id: String, updates: std::collections::H
 
 #[tauri::command]
 pub async fn update_order_status(order_id: String, status: String, waybill_id: Option<String>) -> Result<OrderDetails, String> {
+    if let Ok(details) = update_order_status_fast(&order_id, &status, waybill_id.as_deref()).await {
+        return Ok(details);
+    }
+
     let data = get_sheet_data().await?;
     let row_idx = find_order_row_index(&data, &order_id)?;
     let row_number = row_idx + 1;
@@ -490,6 +650,10 @@ pub struct OrderRow {
 
 #[tauri::command]
 pub async fn fetch_orders_sheets() -> Result<Vec<OrderRow>, String> {
+    if let Ok(orders) = fetch_orders_fast().await {
+        return Ok(orders);
+    }
+
     let data = get_sheet_data().await?;
     
     let get_idx = |h: &str| -> Option<usize> {

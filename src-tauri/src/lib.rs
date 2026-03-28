@@ -61,7 +61,7 @@ pub fn run() {
             // Final fallback defaults for packaged production builds.
             set_env_default("GOOGLE_SHEET_ID", "1bjlF7TI7izjeY8-qKuXrfrCQZaDAW0wMWbv9rkPrtF0");
             set_env_default("GOOGLE_SHEET_NAME", "Orders");
-            set_env_default("GOOGLE_SHEET_ANON_WRITE_URL", "https://script.google.com/macros/s/AKfycbxsSxjcP7FlTBUljkqobbOezDA24xNfWSbMNZnRdqqA0gqWWNQKNxW1dGbeCUn9pS5r/exec");
+            set_env_default("GOOGLE_SHEET_ANON_WRITE_URL", "https://script.google.com/macros/s/AKfycbwMS9LN0uJOKrQoEy6t9eF9iyI1cvW5qoYbKdEfM5iBQr_Qxo5zt6tUYb668lOwiDF4/exec");
             set_env_default("GOOGLE_SHEET_CACHE_TTL_SECS", "600");
             set_env_default("KOOMBIYO_API_KEY", "SLCkDRHdhKjyexZseTLx");
             set_env_default("KOOMBIYO_BASE_URL", "https://application.koombiyodelivery.lk/api");
